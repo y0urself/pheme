@@ -16,105 +16,56 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-from functools import reduce
-from typing import Callable, Dict, List
+from typing import Dict, List
 import logging
 
 import pandas as pd
 from pandas import DataFrame
 from pandas.core.groupby.generic import DataFrameGroupBy
-
+import numpy as np
 
 from pheme.transformation.scanreport.model import (
-    CommonVulnerabilities,
     CVSSDistributionCount,
     HostCount,
     HostResults,
     NVTCount,
     PortCount,
-    QOD,
-    Ref,
     Report,
-    Result,
     Results,
     Scan,
     SeverityOverview,
-    Solution,
     Summary,
     SummaryReport,
     SummaryResults,
-    TopTen,
+    CountGraph,
     VulnerabilityOverview,
 )
-
-
-def group_by_host(first: Dict[str, HostResults], second: Dict[str, str]):
-    host = second.pop('host')
-    host = host if isinstance(host, str) else host.pop("text")
-    hr: HostResults = first.get(host)
-    nvt = second.pop('nvt')
-    solution = (
-        Solution(nvt['solution']['type'], nvt['solution']['text'])
-        if nvt.get('solution')
-        else None
-    )
-    refs = (
-        [Ref(r['id'], r['type']) for r in nvt['refs']['ref']]
-        if nvt.get('refs')
-        else []
-    )
-    oid = nvt['oid']
-    qod = (
-        QOD(
-            second['qod']['value'],
-            second['qod']['type'],
-        )
-        if second.get('qod')
-        else None
-    )
-    shr = Result(
-        oid,
-        nvt.get('type'),
-        nvt.get('name'),
-        nvt.get('family'),
-        nvt.get('cvss_base'),
-        nvt.get('tags'),
-        solution,
-        refs,
-        second.get('port'),
-        second.get('threat'),
-        second.get('severity'),
-        qod,
-        second.get('description'),
-    )
-    if hr:
-        hr.results.append(shr)
-        first[host] = hr
-    else:
-        first[host] = HostResults(host, [shr])
-    del nvt
-    return first
 
 
 logger = logging.getLogger(__name__)
 
 
 def __create_nvt_top_ten(
-    threat: str, group_by_threat: DataFrameGroupBy
-) -> TopTen:
-    threat = group_by_threat.get_group(threat)
-    threat_nvts = threat[['nvt.oid', 'nvt.name']]
-    counted = threat_nvts.value_counts()
-    return TopTen(
-        chart=None,
-        top_ten=[
-            NVTCount(oid=k[0], amount=v, name=k[1])
-            for k, v in counted.head(10).to_dict().items()
-        ],
-    )
+    threat_level: str, group_by_threat: DataFrameGroupBy
+) -> CountGraph:
+    try:
+        threat = group_by_threat.get_group(threat_level)
+        threat_nvts = threat[['nvt.oid', 'nvt.name']]
+        counted = threat_nvts.value_counts()
+        return CountGraph(
+            name=threat_level,
+            chart=None,
+            counts=[
+                NVTCount(oid=k[0], amount=v, name=k[1])
+                for k, v in counted.head(10).to_dict().items()
+            ],
+        )
+    except KeyError:
+        logger.warning('Threat: %s not found', threat_level)
+        return None
 
 
-def __create_host_top_ten(result_series_df: DataFrame) -> TopTen:
+def __create_host_top_ten(result_series_df: DataFrame) -> CountGraph:
     threat = result_series_df.get(['host.text', 'host.hostname'])
     if threat is None:
         threat = result_series_df.get(['host.text'])
@@ -122,23 +73,25 @@ def __create_host_top_ten(result_series_df: DataFrame) -> TopTen:
         return None
 
     counted = threat.value_counts()
-    return TopTen(
+    return CountGraph(
+        name="host_top_ten",
         chart=None,
-        top_ten=[
+        counts=[
             HostCount(ip=k[0], amount=v, name=k[1] if len(k) > 1 else None)
             for k, v in counted.head(10).to_dict().items()
         ],
     )
 
 
-def __create_port_top_ten(result_series_df: DataFrame) -> TopTen:
+def __create_port_top_ten(result_series_df: DataFrame) -> CountGraph:
     threat = result_series_df.get(['port'])
     if threat is None:
         return None
     counted = threat.value_counts()
-    return TopTen(
+    return CountGraph(
+        name="port_top_ten",
         chart=None,
-        top_ten=[
+        counts=[
             PortCount(port=k, amount=v)
             for k, v in counted.head(10).to_dict().items()
         ],
@@ -147,14 +100,15 @@ def __create_port_top_ten(result_series_df: DataFrame) -> TopTen:
 
 def __create_cvss_distribution_port_top_ten(
     result_series_df: DataFrame,
-) -> TopTen:
+) -> CountGraph:
     threat = result_series_df.get(['port', 'nvt.cvss_base'])
     if threat is None:
         return None
     counted = threat.value_counts()
-    return TopTen(
+    return CountGraph(
+        name="cvss_distribution_ports_top_ten",
         chart=None,
-        top_ten=[
+        counts=[
             CVSSDistributionCount(identifier=k[0], amount=v, cvss=k[1])
             for k, v in counted.head(10).to_dict().items()
         ],
@@ -163,16 +117,17 @@ def __create_cvss_distribution_port_top_ten(
 
 def __create_cvss_distribution_host_top_ten(
     result_series_df: DataFrame,
-) -> TopTen:
+) -> CountGraph:
     threat = result_series_df.get(
         ['host.text', 'host.hostname', 'nvt.cvss_base']
     )
     if threat is None:
         return None
     counted = threat.value_counts()
-    return TopTen(
+    return CountGraph(
+        name="cvss_distribution_host_top_ten",
         chart=None,
-        top_ten=[
+        counts=[
             CVSSDistributionCount(identifier=k[0], amount=v, cvss=k[1])
             for k, v in counted.head(10).to_dict().items()
         ],
@@ -181,14 +136,15 @@ def __create_cvss_distribution_host_top_ten(
 
 def __create_cvss_distribution_nvt_top_ten(
     result_series_df: DataFrame,
-) -> TopTen:
+) -> CountGraph:
     threat = result_series_df.get(['nvt.oid', 'nvt.cvss_base'])
     if threat is None:
         return None
     counted = threat.value_counts()
-    return TopTen(
+    return CountGraph(
+        name="cvss_distribution_nvt_top_ten",
         chart=None,
-        top_ten=[
+        counts=[
             CVSSDistributionCount(identifier=k[0], amount=v, cvss=k[1])
             for k, v in counted.head(10).to_dict().items()
         ],
@@ -243,12 +199,59 @@ def __create_summary_results(report: DataFrame) -> SummaryResults:
     return SummaryResults(*data)
 
 
-def transform(
-    data: Dict[str, str], group_by: Callable = group_by_host
-) -> Report:
-    report = data.pop("report")
+def __create_results(report: DataFrame) -> List[Dict]:
+    try:
+        grouped_host = report.groupby('host.text')
+        wanted_columns = [
+            'nvt.oid',
+            'nvt.type',
+            'nvt.name',
+            'nvt.family',
+            'nvt.cvss_base',
+            'nvt.tags',
+            'nvt.refs.ref',
+            'nvt.solution.type',
+            'nvt.solution.text',
+            'port',
+            'threat',
+            'severity',
+            'qod.value',
+            'qod.type',
+            'description',
+        ]
+        results = []
+
+        def normalize_key(key: str) -> str:
+            return key.replace('.', '_')
+
+        for host_text in grouped_host.groups.keys():
+            host_df = grouped_host.get_group(host_text)
+            columns = [x for x in host_df.columns if x in wanted_columns]
+            if len(wanted_columns) != len(columns):
+                logger.warning(
+                    "report for %s -> missing keys: %s",
+                    host_text,
+                    np.setdiff1d(wanted_columns, columns),
+                )
+            flat_results = host_df[columns]
+            result = []
+            for key, series in flat_results.items():
+                for i, value in enumerate(series):
+                    if len(result) < i + 1:
+                        result.append({})
+                    if not (isinstance(value, float) and np.isnan(value)):
+                        result[i][normalize_key(key)] = value
+            results.append(HostResults(host_text, result))
+        return results
+    except KeyError as e:
+        logger.warning('report does not contain host.text returning []; %s', e)
+        return []
+
+
+def transform(data: Dict[str, str]) -> Report:
+    report = data.get("report")
     # sometimes gvmd reports have .report.report sometimes just .report
-    report = report.pop("report", None) or report
+    report = report.get("report") or report
 
     n_df = pd.json_normalize(report)
     results_series = n_df.get('results.result')
@@ -261,13 +264,14 @@ def transform(
         # severity_overview = __create_severity_class_summary(
         #     result_series_df[['original_threat']]
         # )
-        common_vulnerabilities = CommonVulnerabilities(
+
+        common_vulnerabilities = [
             __create_nvt_top_ten('High', group_by_threat),
             __create_nvt_top_ten('Medium', group_by_threat),
             __create_nvt_top_ten('Low', group_by_threat),
-        )
+        ]
     except KeyError as e:
-        logger.debug('ignoring grouping exception, %s', e)
+        logger.warning('ignoring original_threat missing: %s', e)
 
     vulnerabilities_overview = VulnerabilityOverview(
         __create_host_top_ten(result_series_df),
@@ -282,16 +286,23 @@ def transform(
         __create_summary_report(n_df),
         __create_summary_results(n_df),
     )
-    # rewrite with pandas as well
-    original_results = report.pop('results')
-    grouped = reduce(group_by, original_results.pop("result", []), {})
+    results = __create_results(result_series_df)
 
-    logger.info("data transformation; grouped by %s.", group_by)
+    def get_single_result(key: str):
+        value = n_df.get(key)
+        if value is not None:
+            return value.all()
+        return None
 
+    logger.info("data transformation")
     return Report(
         report.get('id'),
         summary,
         common_vulnerabilities,
         vulnerabilities_overview,
-        Results(0, 0, list(grouped.values())),
+        Results(
+            get_single_result('results.max'),
+            get_single_result('results.start'),
+            results,
+        ),
     )
