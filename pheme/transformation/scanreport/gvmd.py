@@ -38,6 +38,7 @@ from pheme.transformation.scanreport.model import (
     Result,
     Results,
     Scan,
+    SeverityOverview,
     Solution,
     Summary,
     SummaryReport,
@@ -194,6 +195,13 @@ def __create_cvss_distribution_nvt_top_ten(
     )
 
 
+def __create_severity_class_summary(
+    df: DataFrame,
+) -> SeverityOverview:
+    data = df.value_counts()
+    return SeverityOverview([x[0] for x in data.index.values], data.values)
+
+
 def __simple_data_frame_to_values(df: DataFrame) -> List:
     if df is None:
         return []
@@ -250,6 +258,9 @@ def transform(
     try:
         group_by_threat = result_series_df.groupby('original_threat')
 
+        # severity_overview = __create_severity_class_summary(
+        #     result_series_df[['original_threat']]
+        # )
         common_vulnerabilities = CommonVulnerabilities(
             __create_nvt_top_ten('High', group_by_threat),
             __create_nvt_top_ten('Medium', group_by_threat),

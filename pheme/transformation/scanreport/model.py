@@ -122,6 +122,12 @@ class Summary:
 
 
 @dataclass
+class SeverityOverview:
+    names: List[str]
+    amounts: List[int]
+
+
+@dataclass
 class NVTCount:
     oid: str
     amount: int
